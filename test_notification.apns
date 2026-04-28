@@ -1,0 +1,12 @@
+{
+  "aps": {
+    "alert": {
+      "title": "Đơn hàng mới",
+      "body": "Bàn 5 vừa đặt món"
+    },
+    "sound": "default"
+  },
+  "tab": "orders",
+  "type": "new_order",
+  "tableFilter": "5"
+}
