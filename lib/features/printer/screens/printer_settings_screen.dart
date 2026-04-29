@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/printer_settings.dart';
 import '../models/remote_settings.dart';
@@ -11,7 +12,9 @@ import '../../../shared/providers/auth_provider.dart';
 import '../../../core/api/api_client.dart';
 
 class PrinterSettingsScreen extends ConsumerStatefulWidget {
-  const PrinterSettingsScreen({super.key});
+  final bool showSlugField;
+
+  const PrinterSettingsScreen({super.key, this.showSlugField = false});
 
   @override
   ConsumerState<PrinterSettingsScreen> createState() => _PrinterSettingsScreenState();
@@ -30,6 +33,7 @@ class _PrinterSettingsScreenState extends ConsumerState<PrinterSettingsScreen> {
 
   // Remote settings
   late TextEditingController _serverBaseUrlCtrl;
+  late TextEditingController _slugCtrl;
   late bool _wsEnabled;
 
   bool _isSaving = false;
@@ -50,16 +54,21 @@ class _PrinterSettingsScreenState extends ConsumerState<PrinterSettingsScreen> {
 
     final r = ref.read(remoteSettingsProvider);
     _serverBaseUrlCtrl = TextEditingController(text: r.serverBaseUrl);
+    _slugCtrl = TextEditingController(text: r.restaurantSlug);
     _wsEnabled = r.wsEnabled;
+
+    WakelockPlus.enable();
   }
 
   @override
   void dispose() {
+    WakelockPlus.disable();
     _ipCtrl.dispose();
     _portCtrl.dispose();
     _billIpCtrl.dispose();
     _billPortCtrl.dispose();
     _serverBaseUrlCtrl.dispose();
+    _slugCtrl.dispose();
     super.dispose();
   }
 
@@ -81,7 +90,9 @@ class _PrinterSettingsScreenState extends ConsumerState<PrinterSettingsScreen> {
 
     // Lưu local trước
     ref.read(printerSettingsProvider.notifier).save(settings);
-    final slug = ref.read(authProvider).user?.restaurantSlug ?? '';
+    final slug = widget.showSlugField
+        ? _slugCtrl.text.trim()
+        : ref.read(authProvider).user?.restaurantSlug ?? '';
     ref.read(remoteSettingsProvider.notifier).save(RemoteSettings(
       serverBaseUrl: _serverBaseUrlCtrl.text.trim().isEmpty
           ? 'https://api.kinzo.vn'
@@ -89,6 +100,20 @@ class _PrinterSettingsScreenState extends ConsumerState<PrinterSettingsScreen> {
       restaurantSlug: slug,
       wsEnabled: _wsEnabled,
     ));
+
+    // Khi chưa đăng nhập (showSlugField) — chỉ lưu local, không sync API
+    if (widget.showSlugField) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Đã lưu cài đặt'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      setState(() => _isSaving = false);
+      return;
+    }
 
     // Đồng bộ lên server
     try {
@@ -368,6 +393,23 @@ class _PrinterSettingsScreenState extends ConsumerState<PrinterSettingsScreen> {
                     ),
                     keyboardType: TextInputType.url,
                   ),
+
+                  if (widget.showSlugField) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _slugCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Slug nhà hàng',
+                        hintText: 'ten-nha-hang',
+                        helperText: 'Đăng nhập trên trình duyệt -> Vào trang chủ -> Xem url: kinzo.vn/xxxx. xxxx chính là slug.',
+                        helperMaxLines: 3,
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.storefront_outlined),
+                      ),
+                      keyboardType: TextInputType.text,
+                      autocorrect: false,
+                    ),
+                  ],
                 ],
               ),
             ),

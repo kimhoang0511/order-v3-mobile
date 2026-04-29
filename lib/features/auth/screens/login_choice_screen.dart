@@ -10,7 +10,10 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../printer/providers/printer_app_state_provider.dart';
 import '../../printer/providers/printer_settings_provider.dart';
+import '../../printer/screens/printer_settings_screen.dart';
+import '../../printer/services/websocket_service.dart';
 
 class LoginChoiceScreen extends ConsumerStatefulWidget {
   const LoginChoiceScreen({super.key});
@@ -161,19 +164,28 @@ class _LoginChoiceScreenState extends ConsumerState<LoginChoiceScreen> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            children: [
-              const Spacer(flex: 2),
-              _buildHeader(),
-              const Spacer(flex: 3),
-              _buildLoginOptions(context),
-              const Spacer(flex: 2),
-              _buildPrivacyFooter(),
-              const SizedBox(height: 12),
-            ],
-          ),
+        child: Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                children: [
+                  const Spacer(flex: 2),
+                  _buildHeader(),
+                  const Spacer(flex: 3),
+                  _buildLoginOptions(context),
+                  const Spacer(flex: 2),
+                  _buildPrivacyFooter(),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            ),
+            const Positioned(
+              top: 12,
+              right: 16,
+              child: _PrinterButton(),
+            ),
+          ],
         ),
       ),
     );
@@ -472,6 +484,115 @@ class _StaffUrlDialogState extends State<_StaffUrlDialog> {
           child: const Text('Đăng nhập'),
         ),
       ],
+    );
+  }
+}
+
+// ── Printer button (top-right overlay) ───────────────────────────────────────
+
+class _PrinterButton extends ConsumerWidget {
+  const _PrinterButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final wsService = ref.read(printerAppStateProvider.notifier).wsService;
+    final remoteSettings = ref.watch(remoteSettingsProvider);
+
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const PrinterSettingsScreen(showSlugField: true)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.1),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: const Icon(Icons.print_rounded, size: 20, color: Color(0xFF6B7280)),
+              ),
+              if (remoteSettings.wsEnabled)
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: ListenableBuilder(
+                    listenable: wsService,
+                    builder: (context, _) => _WsDot(status: wsService.status),
+                  ),
+                ),
+            ],
+          ),
+          if (remoteSettings.wsEnabled) ...[
+            const SizedBox(height: 4),
+            ListenableBuilder(
+              listenable: wsService,
+              builder: (context, _) => _WsLabel(status: wsService.status),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _WsDot extends StatelessWidget {
+  final WsStatus status;
+  const _WsDot({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (status) {
+      WsStatus.connected    => Colors.green,
+      WsStatus.connecting   => Colors.blue,
+      WsStatus.reconnecting => Colors.orange,
+      WsStatus.disconnected => Colors.red,
+    };
+    return Container(
+      width: 10,
+      height: 10,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 1.5),
+      ),
+    );
+  }
+}
+
+class _WsLabel extends StatelessWidget {
+  final WsStatus status;
+  const _WsLabel({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, color) = switch (status) {
+      WsStatus.connected    => ('Đã kết nối', Colors.green.shade700),
+      WsStatus.connecting   => ('Đang kết nối', Colors.blue.shade700),
+      WsStatus.reconnecting => ('Đang thử lại', Colors.orange.shade700),
+      WsStatus.disconnected => ('Mất kết nối', Colors.red.shade700),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 4)],
+      ),
+      child: Text(label, style: TextStyle(fontSize: 9, color: color, fontWeight: FontWeight.w600)),
     );
   }
 }

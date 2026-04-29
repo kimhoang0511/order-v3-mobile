@@ -1,0 +1,2 @@
+json_key_file("fastlane/google-play-api.json")
+package_name("com.kinzo.order_v3_mobile")
