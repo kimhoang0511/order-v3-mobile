@@ -19,13 +19,20 @@ void main() async {
   if (DefaultFirebaseOptions.isSupported) {
     try {
       await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-      await PushNotificationService.initialize();
     } catch (_) {
-      // Firebase unavailable (e.g. simulator without APNs) — app still runs.
+      // Firebase unavailable — app still runs.
     }
   }
 
+  // Render the app immediately so user never sees a black/white screen.
+  // Push notification setup (including permission dialog) runs after first frame.
   runApp(const ProviderScope(child: KinzoApp()));
+
+  if (DefaultFirebaseOptions.isSupported) {
+    try {
+      await PushNotificationService.initialize();
+    } catch (_) {}
+  }
 }
 
 class KinzoApp extends ConsumerWidget {

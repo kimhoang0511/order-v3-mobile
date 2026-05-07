@@ -209,15 +209,21 @@ class _TabletLayout extends StatelessWidget {
             child: Column(
               children: [
                 const SizedBox(height: 8),
-                GridView.count(
-                  crossAxisCount: 2,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  crossAxisSpacing: 16,
-                  mainAxisSpacing: 16,
-                  childAspectRatio: 2.4,
-                  children: _buildCards(context, ref, spacing: 0),
-                ),
+                Builder(builder: (context) {
+                  final cards = _buildCards(context, ref, spacing: 0);
+                  return GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 16,
+                      crossAxisSpacing: 16,
+                      mainAxisExtent: 120,
+                    ),
+                    itemCount: cards.length,
+                    itemBuilder: (_, i) => cards[i],
+                  );
+                }),
               ],
             ),
           ),
