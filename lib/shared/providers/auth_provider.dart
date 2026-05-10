@@ -78,6 +78,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState();
   }
 
+  Future<void> refresh() => _fetchCurrentUser();
+
   Future<void> checkAuth() async {
     final token = await AppSecureStorage.read(AppConstants.authTokenKey);
     if (token == null) return;

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../core/api/api_client.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/providers/auth_provider.dart';
@@ -26,6 +27,58 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     _apiUrlController.text =
         prefs.getString(AppConstants.apiBasePathKey) ?? AppConstants.defaultApiUrl;
+  }
+
+  Future<void> _showDeleteAccountDialog() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Xóa tài khoản'),
+        content: const Text(
+          'Việc xóa tài khoản là không thể hoàn tác. Tất cả dữ liệu nhà hàng, thực đơn và lịch sử đơn hàng sẽ bị vô hiệu hoá.\n\nBạn có chắc chắn muốn xóa tài khoản không?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Huỷ'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Xóa tài khoản', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final api = ref.read(apiClientProvider);
+      await api.delete('/api/auth/account');
+      await ref.read(authProvider.notifier).logout();
+      if (mounted) {
+        Navigator.of(context).pop();
+        context.go('/login-choice');
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Xóa tài khoản thất bại. Vui lòng thử lại.'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _saveApiUrl() async {
@@ -113,6 +166,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       await ref.read(authProvider.notifier).logout();
                       if (context.mounted) context.go('/login-choice');
                     },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.delete_forever_outlined, color: AppColors.error),
+                    title: const Text('Xóa tài khoản', style: TextStyle(color: AppColors.error)),
+                    onTap: _showDeleteAccountDialog,
                   ),
                 ] else ...[
                   const Divider(height: 1),

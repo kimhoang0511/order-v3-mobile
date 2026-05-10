@@ -276,22 +276,6 @@ class _LoginChoiceScreenState extends ConsumerState<LoginChoiceScreen> {
           iconBgColor: AppColors.secondary.withOpacity(0.08),
           onTap: () => _showStaffLoginOptions(context),
         ),
-        const SizedBox(height: 16),
-        OutlinedButton.icon(
-          onPressed: () => launchUrl(
-            Uri.parse('https://www.kinzo.vn/register'),
-            mode: LaunchMode.externalApplication,
-          ),
-          icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
-          label: const Text('Đăng ký', style: TextStyle(fontWeight: FontWeight.w600)),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: AppColors.primary,
-            side: BorderSide(color: AppColors.primary.withOpacity(0.4)),
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            minimumSize: const Size(double.infinity, 0),
-          ),
-        ),
       ],
     );
   }

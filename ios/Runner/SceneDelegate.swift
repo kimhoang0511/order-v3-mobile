@@ -1,12 +1,21 @@
 import Flutter
 import UIKit
 import Photos
+import UserNotifications
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   var window: UIWindow?
   private var flutterEngine: FlutterEngine?
   private var deepLinkChannel: FlutterMethodChannel?
   private var pendingDeepLink: String?
+  private var notifTapChannel: FlutterMethodChannel?
+
+  /// Called by AppDelegate.didReceive when app is active (foreground tap).
+  func invokeNotifTap(_ json: String) {
+    DispatchQueue.main.async { [weak self] in
+      self?.notifTapChannel?.invokeMethod("onTap", arguments: json)
+    }
+  }
 
   func scene(
     _ scene: UIScene,
@@ -68,6 +77,21 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
       if let pending = pendingDeepLink {
         pendingDeepLink = nil
         dlChannel.invokeMethod("onDeepLink", arguments: pending)
+      }
+
+      let tapChannel = FlutterMethodChannel(
+        name: "com.kinzo/notification_tap",
+        binaryMessenger: registrar.messenger()
+      )
+      notifTapChannel = tapChannel
+      tapChannel.setMethodCallHandler { call, result in
+        guard call.method == "consume" else {
+          result(FlutterMethodNotImplemented)
+          return
+        }
+        let str = UserDefaults.standard.string(forKey: "kinzo_fcm_tap")
+        UserDefaults.standard.removeObject(forKey: "kinzo_fcm_tap")
+        result(str)
       }
     }
 

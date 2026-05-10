@@ -4,9 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,7 +25,8 @@ class WebViewOverlay extends ConsumerStatefulWidget {
   ConsumerState<WebViewOverlay> createState() => _WebViewOverlayState();
 }
 
-class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
+class _WebViewOverlayState extends ConsumerState<WebViewOverlay>
+    with WidgetsBindingObserver {
   late final WebViewController _controller;
   bool _isLoading = false;
   bool _showControls = false;
@@ -43,23 +42,42 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initController();
     _loadCachedAuth();
-    _notifSub = PushNotificationService.urlStream.listen((url) {
-      ref.read(webViewOverlayProvider.notifier).show(
-        url: url,
-        title: 'Thông báo',
-        ignoreWebViewHistory: true,
-      );
-    });
+    _notifSub = PushNotificationService.urlStream.listen(_navigateTo);
+    // Consume any URL saved before this widget was mounted (killed-state tap).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _consumePending());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
     _downloadSummaryTimer?.cancel();
     _notifSub?.cancel();
     super.dispose();
+  }
+
+  // Called when app comes back to foreground — picks up any pending nav URL
+  // from a background notification tap.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _consumePending();
+  }
+
+  void _navigateTo(String url) {
+    ref.read(webViewOverlayProvider.notifier).show(
+      url: url,
+      title: 'Thông báo',
+      ignoreWebViewHistory: true,
+    );
+  }
+
+  Future<void> _consumePending() async {
+    var url = await PushNotificationService.consumePendingNavUrl();
+    url ??= await PushNotificationService.consumeNativeTapUrl();
+    if (url != null && mounted) _navigateTo(url);
   }
 
   Future<void> _loadCachedAuth() async {
@@ -81,6 +99,15 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
     _hideTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _showControls = false);
     });
+  }
+
+  bool _isLandingPageUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
+    final host = uri.host;
+    if (!host.contains('kinzo.vn')) return false;
+    final path = uri.path;
+    return path == '' || path == '/';
   }
 
   bool _isRestaurantHomeUrl(String url) {
@@ -121,14 +148,18 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
   void _hide() => ref.read(webViewOverlayProvider.notifier).hide();
 
   Future<void> _goHome() async {
-    // Read live from secure storage — _cachedStaffToken may be stale if the
-    // overlay was created before the user logged in (WebViewOverlay stays in
-    // the widget tree for the entire app lifetime).
     final ownerToken = await AppSecureStorage.read(AppConstants.authTokenKey) ?? '';
     final staffToken = await AppSecureStorage.read(AppConstants.staffTokenKey) ?? '';
     _hide();
     if (!mounted) return;
     if (ownerToken.isNotEmpty) {
+      // Kiểm tra lại trạng thái tài khoản — nếu đã xóa (is_active=false) backend trả 401
+      await ref.read(authProvider.notifier).refresh();
+      if (!mounted) return;
+      if (!ref.read(authProvider).isAuthenticated) {
+        ref.read(routerProvider).go('/login-choice');
+        return;
+      }
       ref.read(routerProvider).go('/home');
     } else if (staffToken.isNotEmpty) {
       ref.read(routerProvider).go('/staff-view?t=${Uri.encodeComponent(staffToken)}');
@@ -163,9 +194,9 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(
-        'Mozilla/5.0 (Linux; Android 10; Mobile) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/124.0.0.0 Mobile Safari/537.36',
+        Platform.isIOS
+            ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+            : 'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
       )
       ..setNavigationDelegate(NavigationDelegate(
         onPageStarted: (_) {
@@ -227,6 +258,21 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
           final url = change.url ?? '';
           final uri = Uri.tryParse(url);
           if (uri == null) return;
+
+          // Detect account deletion — web page gọi history.replaceState với ?status=deleted
+          if (uri.path == '/account/delete' && uri.queryParameters['status'] == 'deleted') {
+            WidgetsBinding.instance.addPostFrameCallback((_) async {
+              if (!mounted) return;
+              await ref.read(authProvider.notifier).logout();
+              await _clearWebViewAuth();
+              if (mounted) {
+                _hide();
+                ref.read(routerProvider).go('/login-choice');
+              }
+            });
+            return;
+          }
+
           if (_isRestaurantHomeUrl(url)) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
@@ -246,6 +292,15 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
           }
         },
         onNavigationRequest: (request) {
+          // Block landing page — redirect đến login với webview=true
+          if (_isLandingPageUrl(request.url)) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                _loadWithToken('${AppConstants.webBaseUrl}/login?webview=true');
+              }
+            });
+            return NavigationDecision.prevent;
+          }
           if (_isRestaurantHomeUrl(request.url)) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) {
@@ -257,10 +312,6 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
           }
           final uri = Uri.tryParse(request.url);
           if (uri != null && uri.path == '/register') {
-            launchUrl(
-              Uri.parse('https://www.kinzo.vn/register'),
-              mode: LaunchMode.externalApplication,
-            );
             return NavigationDecision.prevent;
           }
           return NavigationDecision.navigate;
@@ -277,6 +328,19 @@ class _WebViewOverlayState extends ConsumerState<WebViewOverlay> {
       ..addJavaScriptChannel(
         'FlutterDownload',
         onMessageReceived: (msg) => _handleFileDownload(msg.message),
+      )
+      ..addJavaScriptChannel(
+        'FlutterAuth',
+        onMessageReceived: (msg) async {
+          if (msg.message == 'account_deleted') {
+            await ref.read(authProvider.notifier).logout();
+            await _clearWebViewAuth();
+            if (mounted) {
+              _hide();
+              ref.read(routerProvider).go('/login-choice');
+            }
+          }
+        },
       )
       ..loadRequest(Uri.parse('about:blank'));
 

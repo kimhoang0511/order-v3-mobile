@@ -1,11 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/auth_provider.dart';
 import '../utils/order_actions.dart';
 import '../../core/constants/app_constants.dart';
+import '../../core/services/push_notification_service.dart';
 import '../../features/printer/models/printer_settings.dart';
 import '../../features/printer/providers/printer_app_state_provider.dart';
 import '../../features/printer/providers/printer_settings_provider.dart';
@@ -27,7 +30,44 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAutoScan());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybeAutoScan();
+      _maybePromptNotifPreview();
+    });
+  }
+
+  Future<void> _maybePromptNotifPreview() async {
+    final should = await PushNotificationService.shouldPromptPreviewSetting();
+    if (!should || !mounted) return;
+    await Future.delayed(const Duration(seconds: 2));
+    if (!mounted) return;
+    _showNotifPreviewDialog();
+  }
+
+  void _showNotifPreviewDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Hiện nội dung thông báo'),
+        content: const Text(
+          'Để xem nội dung thông báo ngay trên màn hình khóa, hãy vào:\n\n'
+          'Cài đặt → Thông báo → Kinzo\n→ Hiển thị bản xem trước → Luôn luôn',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Để sau'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              openAppSettings();
+            },
+            child: const Text('Mở cài đặt'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _maybeAutoScan() async {
@@ -93,6 +133,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final auth = ref.watch(authProvider);
     final restaurantName = auth.user?.restaurantName ?? '';
     final logoUrl = auth.user?.logoUrl;
+
+    // Nếu tài khoản bị xóa (is_active=false → 401 → unauthenticated) → về login-choice
+    ref.listen<AuthState>(authProvider, (prev, next) {
+      if (prev?.isAuthenticated == true && !next.isAuthenticated) {
+        context.go('/login-choice');
+      }
+    });
 
     // Khởi động printer state: load settings từ SharedPrefs → configure WS
     ref.watch(printerAppStateProvider);
@@ -354,18 +401,73 @@ class _LogoutButton extends StatelessWidget {
       );
 }
 
-class _Logo extends StatelessWidget {
+class _Logo extends StatefulWidget {
   final String? logoUrl;
   final double size;
   const _Logo({this.logoUrl, this.size = 80});
 
   @override
-  Widget build(BuildContext context) => ClipRRect(
-        borderRadius: BorderRadius.circular(size * 0.28),
-        child: logoUrl != null
-            ? Image.network(logoUrl!, width: size, height: size, fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _DefaultLogo(size: size))
-            : _DefaultLogo(size: size),
+  State<_Logo> createState() => _LogoState();
+}
+
+class _LogoState extends State<_Logo> {
+  int _tapCount = 0;
+
+  void _onTap() async {
+    _tapCount++;
+    if (_tapCount < 5) return;
+    _tapCount = 0;
+
+    final info = await PushNotificationService.getDebugInfo();
+    if (!mounted) return;
+
+    final token = info['token'] ?? 'null';
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('FCM Debug Info'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Permission: ${info['permission']}',
+                style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            const Text('FCM Token:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            SelectableText(token, style: const TextStyle(fontSize: 11)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: token));
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Đã copy token'), duration: Duration(seconds: 2)),
+              );
+            },
+            child: const Text('Copy token'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: _onTap,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(widget.size * 0.28),
+          child: widget.logoUrl != null
+              ? Image.network(widget.logoUrl!, width: widget.size, height: widget.size, fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _DefaultLogo(size: widget.size))
+              : _DefaultLogo(size: widget.size),
+        ),
       );
 }
 
@@ -858,6 +960,7 @@ class _ToggleChip extends StatelessWidget {
         ),
       );
 }
+
 
 class _LegendDot extends StatelessWidget {
   final Color color;

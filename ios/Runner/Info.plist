@@ -71,7 +71,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Ứng dụng cần quyền truy cập camera để quét mã QR bàn ăn</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Ứng dụng cần quyền truy cập thư viện ảnh</string>
+	<string>Kinzo cần truy cập thư viện ảnh để bạn có thể chọn ảnh tải lên thực đơn nhà hàng. Ví dụ: chọn ảnh món ăn khi thêm hoặc chỉnh sửa món trong menu.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Ứng dụng cần quyền lưu ảnh QR vào thư viện ảnh</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

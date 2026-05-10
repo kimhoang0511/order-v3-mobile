@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:convert';
 import '../constants/app_constants.dart';
 import '../storage/secure_storage.dart';
 import 'notification_sound_service.dart';
@@ -71,16 +74,107 @@ class PushNotificationService {
   static AndroidNotificationChannel _channelFor(String channelId) =>
       _channels.firstWhere((c) => c.id == channelId, orElse: () => _channels.first);
 
+  static String? _lastToken;
+  static String _lastPermissionStatus = 'unknown';
+
+  /// Returns FCM debug info: token + permission status.
+  static Future<Map<String, String>> getDebugInfo() async {
+    String apnsToken = 'N/A';
+    String fcmToken = _lastToken ?? 'chưa lấy được';
+
+    if (Platform.isIOS) {
+      try {
+        apnsToken = await FirebaseMessaging.instance.getAPNSToken() ?? 'null';
+      } catch (e) {
+        apnsToken = 'Lỗi: $e';
+      }
+    }
+
+    if (_lastToken == null) {
+      try {
+        fcmToken = await FirebaseMessaging.instance.getToken() ?? 'getToken() trả về null';
+      } catch (e) {
+        fcmToken = 'Lỗi: $e';
+      }
+    }
+
+    return {
+      'token': fcmToken,
+      'apns': apnsToken,
+      'permission': _lastPermissionStatus,
+    };
+  }
+
   // Stream that emits a URL whenever a notification is tapped.
   static final _urlController = StreamController<String>.broadcast();
   static Stream<String> get urlStream => _urlController.stream;
 
+  static const _pendingNavKey = '_fcm_pending_nav_url';
+
+  /// Persist URL to SharedPreferences AND emit to stream.
+  /// WebViewOverlay calls consumePendingNavUrl() on mount/resume.
+  static Future<void> _emitUrl(String url) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_pendingNavKey, url);
+    _urlController.add(url);
+  }
+
+  /// Returns and clears the pending navigation URL (if any).
+  static Future<String?> consumePendingNavUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = prefs.getString(_pendingNavKey);
+    if (url != null) await prefs.remove(_pendingNavKey);
+    return url;
+  }
+
+  static const _notifTapChannel = MethodChannel('com.kinzo/notification_tap');
+
+  /// iOS only: reads and clears the notification tap data written by
+  /// AppDelegate.didReceive via UserDefaults, then builds a nav URL from it.
+  static Future<String?> consumeNativeTapUrl() async {
+    if (!Platform.isIOS) return null;
+    try {
+      final str = await _notifTapChannel.invokeMethod<String>('consume');
+      if (str == null || str.isEmpty) return null;
+      final data = jsonDecode(str) as Map<String, dynamic>;
+      return await _buildUrl(data);
+    } catch (_) {
+      return null;
+    }
+  }
+
   // Holds foreground notification payloads until user taps them.
   static final _pendingUrls = <int, String>{};
+
+  /// Returns true the first time this is called on iOS after notification
+  /// permission is granted — used to prompt the user to enable previews.
+  static Future<bool> shouldPromptPreviewSetting() async {
+    if (!Platform.isIOS) return false;
+    final prefs = await SharedPreferences.getInstance();
+    final alreadyShown = prefs.getBool('_notif_preview_prompted') ?? false;
+    if (alreadyShown) return false;
+    final status = await FirebaseMessaging.instance.getNotificationSettings();
+    if (status.authorizationStatus != AuthorizationStatus.authorized &&
+        status.authorizationStatus != AuthorizationStatus.provisional) return false;
+    await prefs.setBool('_notif_preview_prompted', true);
+    return true;
+  }
 
   /// Call once from main() after Firebase.initializeApp().
   static Future<void> initialize() async {
     FirebaseMessaging.onBackgroundMessage(_onBackgroundMessage);
+
+    // iOS foreground tap: native calls onTap directly when app is active.
+    if (Platform.isIOS) {
+      _notifTapChannel.setMethodCallHandler((call) async {
+        if (call.method != 'onTap') return;
+        final json = call.arguments as String?;
+        if (json == null || json.isEmpty) return;
+        final data = jsonDecode(json) as Map<String, dynamic>;
+        final url = await _buildUrl(data);
+        if (url != null) await _emitUrl(url);
+      });
+    }
 
     await _localNotifications.initialize(
       const InitializationSettings(
@@ -111,6 +205,14 @@ class PushNotificationService {
       }
     }
 
+    // iOS: AppDelegate.willPresent shows the system banner for all notifications.
+    // Disable Firebase's duplicate presentation; badge update still allowed.
+    await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+      alert: false,
+      badge: true,
+      sound: false,
+    );
+
     await _requestPermission();
 
     // Pre-init TTS so the first notification has no cold-start delay.
@@ -122,19 +224,14 @@ class PushNotificationService {
     // Background tap: app comes to foreground.
     FirebaseMessaging.onMessageOpenedApp.listen((message) async {
       final url = await _buildUrl(message.data);
-      if (url != null) _urlController.add(url);
+      if (url != null) await _emitUrl(url);
     });
 
     // Killed state tap: app launched from notification.
     final initial = await FirebaseMessaging.instance.getInitialMessage();
     if (initial != null) {
       final url = await _buildUrl(initial.data);
-      if (url != null) {
-        // Delay slightly so the widget tree is ready.
-        Future.delayed(const Duration(milliseconds: 800), () {
-          _urlController.add(url);
-        });
-      }
+      if (url != null) await _emitUrl(url);
     }
 
     // Refresh token whenever Firebase rotates it.
@@ -187,6 +284,13 @@ class PushNotificationService {
       if (tab != null) return AppConstants.staffUrl;
     }
 
+    // Final fallback: data exists but lacks recognized tab/route (e.g. only has
+    // "type"). Navigate to the default screen so tapping always does something.
+    if (linkToken != null) {
+      return '${AppConstants.webBaseUrl}/staff-view?t=${Uri.encodeComponent(linkToken)}&mode=manage&tab=orders';
+    }
+    if (ownerToken != null) return AppConstants.staffUrl;
+
     return null;
   }
 
@@ -196,25 +300,40 @@ class PushNotificationService {
       badge: true,
       sound: true,
     );
-    if (settings.authorizationStatus == AuthorizationStatus.authorized ||
-        settings.authorizationStatus == AuthorizationStatus.provisional) {
-      final token = await FirebaseMessaging.instance.getToken();
-      if (token != null) await _saveAndUploadToken(token);
+    _lastPermissionStatus = settings.authorizationStatus.name;
+    if (settings.authorizationStatus != AuthorizationStatus.authorized &&
+        settings.authorizationStatus != AuthorizationStatus.provisional) return;
+
+    // iOS: APNs token must be available before FCM token can be retrieved.
+    if (Platform.isIOS) {
+      String? apns;
+      for (int i = 0; i < 5; i++) {
+        apns = await FirebaseMessaging.instance.getAPNSToken();
+        if (apns != null) break;
+        await Future.delayed(const Duration(seconds: 2));
+      }
+      if (apns == null) return;
     }
+
+    final token = await FirebaseMessaging.instance.getToken();
+    _lastToken = token;
+    if (token != null) await _saveAndUploadToken(token);
   }
 
   static Future<void> _showForegroundNotification(RemoteMessage message) async {
     final n = message.notification;
     if (n == null) return;
 
-    final id = message.hashCode;
-
-    // Pre-build URL so it's ready when user taps.
-    final url = await _buildUrl(message.data);
-    if (url != null) _pendingUrls[id] = url;
-
     // Play spoken audio (foreground only — background uses system sound).
     NotificationSoundService.playFromData(message.data).ignore();
+
+    // iOS: AppDelegate.willPresent already shows the system FCM banner.
+    // No local notification needed — avoids duplicate and delegate conflicts.
+    if (Platform.isIOS) return;
+
+    final id = message.hashCode;
+    final url = await _buildUrl(message.data);
+    if (url != null) _pendingUrls[id] = url;
 
     final type = message.data['type'] as String?;
     final chId = _channelIdForType(type);
@@ -232,12 +351,7 @@ class PushNotificationService {
           importance: Importance.high,
           priority: Priority.high,
           icon: '@mipmap/ic_launcher',
-          // TTS is already speaking — suppress the banner sound to avoid overlap.
           playSound: false,
-        ),
-        iOS: DarwinNotificationDetails(
-          presentSound: false, // TTS is speaking
-          sound: _iosSoundForType(type),
         ),
       ),
       payload: id.toString(),

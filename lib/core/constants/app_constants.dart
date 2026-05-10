@@ -26,6 +26,7 @@ class AppConstants {
   static const String cartKey = 'cart_data';
   static const String privacyPolicyUrl = '$webBaseUrl/privacy-policy';
   static const String termsUrl = '$webBaseUrl/terms';
+  static const String deleteAccountUrl = '$webBaseUrl/account/delete';
   static const String languageKey = 'app_language';
 
   static const Duration connectTimeout = Duration(seconds: 15);
