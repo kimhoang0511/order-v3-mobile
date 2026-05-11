@@ -201,7 +201,7 @@ class _PrinterSettingsScreenState extends ConsumerState<PrinterSettingsScreen> {
                   value: PrinterConnectionType.bluetooth,
                   groupValue: _connectionType,
                   title: const Text('Bluetooth'),
-                  subtitle: const Text('Android / iOS'),
+                  subtitle: const Text('Kết nối không dây'),
                   onChanged: (v) => setState(() => _connectionType = v!),
                 ),
               ],

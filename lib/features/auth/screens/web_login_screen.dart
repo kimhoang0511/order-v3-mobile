@@ -1,8 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/storage/secure_storage.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -23,6 +27,7 @@ class _WebLoginScreenState extends ConsumerState<WebLoginScreen> {
   bool _isLoading = true;
   bool _tokenCaptured = false;
   bool _localStorageCleared = false;
+  bool _appleLoading = false;
   Timer? _pollTimer;
   StreamSubscription<Uri>? _deepLinkSub;
 
@@ -30,16 +35,14 @@ class _WebLoginScreenState extends ConsumerState<WebLoginScreen> {
   void initState() {
     super.initState();
     _initWebView();
-    // On iOS, Google OAuth completes in Safari and returns via kinzoapp:// deep link.
-    if (Platform.isIOS) {
-      _deepLinkSub = DeepLinkService.stream.listen((uri) {
-        if (uri.scheme == 'kinzoapp' && uri.host == 'auth') {
-          final token = uri.queryParameters['token'] ?? '';
-          final params = uri.queryParameters;
-          if (token.isNotEmpty) _handleDeepLinkAuth(params);
-        }
-      });
-    }
+    // Google OAuth (iOS) và Apple OAuth (Android) đều trả về qua kinzoapp:// deep link.
+    _deepLinkSub = DeepLinkService.stream.listen((uri) {
+      if (uri.scheme == 'kinzoapp' && uri.host == 'auth') {
+        final token = uri.queryParameters['token'] ?? '';
+        final params = uri.queryParameters;
+        if (token.isNotEmpty) _handleDeepLinkAuth(params);
+      }
+    });
   }
 
   @override
@@ -61,6 +64,16 @@ class _WebLoginScreenState extends ConsumerState<WebLoginScreen> {
         'FlutterAuth',
         onMessageReceived: (msg) => _handleAuthMessage(msg.message),
       )
+      ..addJavaScriptChannel(
+        'FlutterApple',
+        onMessageReceived: (_) {
+          if (Platform.isIOS) {
+            _handleAppleSignIn();
+          } else if (Platform.isAndroid) {
+            _handleAndroidAppleSignIn();
+          }
+        },
+      )
       ..setNavigationDelegate(NavigationDelegate(
         onNavigationRequest: (request) {
           // On iOS, intercept Google OAuth URL and open in external browser.
@@ -70,7 +83,7 @@ class _WebLoginScreenState extends ConsumerState<WebLoginScreen> {
             final newUri = uri.replace(
               queryParameters: {...uri.queryParameters, 'webview': 'true'},
             );
-            launchUrl(newUri, mode: LaunchMode.externalApplication);
+            launchUrl(newUri, mode: LaunchMode.inAppBrowserView);
             return NavigationDecision.prevent;
           }
           return NavigationDecision.navigate;
@@ -143,9 +156,117 @@ class _WebLoginScreenState extends ConsumerState<WebLoginScreen> {
     await WebViewCookieManager().clearCookies();
 
     final uri = Uri.parse(AppConstants.loginUrl);
+    final platform = Platform.isIOS ? 'ios' : (Platform.isAndroid ? 'android' : '');
+    final extraParams = platform.isNotEmpty
+        ? {'webview': 'true', 'platform': platform}
+        : {'webview': 'true'};
     await _controller.loadRequest(
-      uri.replace(queryParameters: {...uri.queryParameters, 'webview': 'true'}),
+      uri.replace(queryParameters: {...uri.queryParameters, ...extraParams}),
     );
+  }
+
+  Future<void> _handleAppleSignIn() async {
+    if (_appleLoading || _tokenCaptured) return;
+    setState(() => _appleLoading = true);
+    try {
+      final credential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+      );
+
+      final identityToken = credential.identityToken;
+      if (identityToken == null) throw Exception('No identity token');
+
+      final fullName = [credential.givenName, credential.familyName]
+          .where((s) => s != null && s!.isNotEmpty)
+          .map((s) => s!)
+          .join(' ');
+
+      final prefs = await SharedPreferences.getInstance();
+      final base = prefs.getString(AppConstants.apiBasePathKey) ?? AppConstants.defaultApiUrl;
+
+      final res = await http.post(
+        Uri.parse('$base/api/auth/apple/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'identity_token': identityToken,
+          if (fullName.isNotEmpty) 'full_name': fullName,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (!mounted) return;
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final token = data['token'] as String;
+        final owner = data['owner'] as Map<String, dynamic>;
+
+        _tokenCaptured = true;
+        _pollTimer?.cancel();
+
+        await AppSecureStorage.write(AppConstants.authTokenKey, token);
+        await AppSecureStorage.write(AppConstants.ownerInfoKey, jsonEncode(owner));
+        await ref.read(authProvider.notifier).checkAuth();
+        PushNotificationService.registerForOwner(token).ignore();
+        if (mounted) context.go('/home');
+      } else if (res.statusCode == 404) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Tài khoản Apple này chưa được đăng ký. Vui lòng đăng nhập bằng Google.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Đăng nhập với Apple thất bại. Vui lòng thử lại.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code != AuthorizationErrorCode.canceled && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Đăng nhập với Apple thất bại. Vui lòng thử lại.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Có lỗi xảy ra. Vui lòng thử lại.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _appleLoading = false);
+    }
+  }
+
+  Future<void> _handleAndroidAppleSignIn() async {
+    final prefs = await SharedPreferences.getInstance();
+    final base = prefs.getString(AppConstants.apiBasePathKey) ?? AppConstants.defaultApiUrl;
+
+    final appleAuthUrl = Uri.https('appleid.apple.com', '/auth/authorize', {
+      'client_id': 'com.kinzo.web',
+      'redirect_uri': '$base/api/auth/apple/android/callback',
+      'response_type': 'code id_token',
+      'scope': 'name email',
+      'response_mode': 'form_post',
+      'state': 'android_${DateTime.now().millisecondsSinceEpoch}',
+    });
+
+    await launchUrl(appleAuthUrl, mode: LaunchMode.inAppBrowserView);
   }
 
   Future<void> _handleDeepLinkAuth(Map<String, String> params) async {
