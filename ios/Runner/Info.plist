@@ -69,7 +69,7 @@
 		<string>_http._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Ứng dụng cần quyền truy cập camera để quét mã QR bàn ăn</string>
+	<string>Ứng dụng cần quyền truy cập camera để quét mã QR đăng nhập giành cho nhân viên</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Kinzo cần truy cập thư viện ảnh để bạn có thể chọn ảnh tải lên thực đơn nhà hàng. Ví dụ: chọn ảnh món ăn khi thêm hoặc chỉnh sửa món trong menu.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

@@ -2,7 +2,7 @@ name: order_v3_mobile
 description: "Kinzo - Food Ordering Mobile App"
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.11.4

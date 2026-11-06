@@ -76,6 +76,15 @@ class _WebLoginScreenState extends ConsumerState<WebLoginScreen> {
       )
       ..setNavigationDelegate(NavigationDelegate(
         onNavigationRequest: (request) {
+          // Intercept kinzoapp:// deep links inside the WebView (Android: Google OAuth
+          // completes inside WebView and backend redirects to kinzoapp://).
+          if (request.url.startsWith('kinzoapp://')) {
+            final uri = Uri.tryParse(request.url);
+            if (uri != null && uri.host == 'auth') {
+              _handleDeepLinkAuth(uri.queryParameters);
+            }
+            return NavigationDecision.prevent;
+          }
           // On iOS, intercept Google OAuth URL and open in external browser.
           // Adds webview=true so backend redirects back via kinzoapp:// deep link.
           if (Platform.isIOS && request.url.contains('/api/auth/google/login')) {
@@ -212,45 +221,50 @@ class _WebLoginScreenState extends ConsumerState<WebLoginScreen> {
         PushNotificationService.registerForOwner(token).ignore();
         if (mounted) context.go('/home');
       } else if (res.statusCode == 404) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Tài khoản Apple này chưa được đăng ký. Vui lòng đăng nhập bằng Google.'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
+        if (mounted) _showAppleErrorDialog(
+          'Tài khoản chưa đăng ký',
+          'Tài khoản Apple này chưa được đăng ký trong hệ thống. Vui lòng liên hệ quản trị viên để được hỗ trợ.',
+        );
       } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Đăng nhập với Apple thất bại. Vui lòng thử lại.'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
+        if (mounted) _showAppleErrorDialog(
+          'Đăng nhập thất bại',
+          'Không thể đăng nhập với Apple. Vui lòng thử lại.',
+        );
       }
     } on SignInWithAppleAuthorizationException catch (e) {
       if (e.code != AuthorizationErrorCode.canceled && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Đăng nhập với Apple thất bại. Vui lòng thử lại.'),
-            backgroundColor: Colors.red,
-          ),
+        _showAppleErrorDialog(
+          'Đăng nhập thất bại',
+          'Không thể đăng nhập với Apple. Vui lòng thử lại.',
         );
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Có lỗi xảy ra. Vui lòng thử lại.'),
-            backgroundColor: Colors.red,
-          ),
+        _showAppleErrorDialog(
+          'Có lỗi xảy ra',
+          'Đã xảy ra lỗi trong quá trình đăng nhập. Vui lòng thử lại.',
         );
       }
     } finally {
       if (mounted) setState(() => _appleLoading = false);
     }
+  }
+
+  void _showAppleErrorDialog(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _handleAndroidAppleSignIn() async {

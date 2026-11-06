@@ -44,21 +44,18 @@ class _LoginChoiceScreenState extends ConsumerState<LoginChoiceScreen> {
   }
 
   Future<void> _handleQrScan(BuildContext context) async {
-    final status = await Permission.camera.request();
+    // Only check current status — don't request upfront.
+    // mobile_scanner triggers the native iOS permission dialog when the camera starts,
+    // which is more reliable across iOS versions than permission_handler.request().
+    final status = await Permission.camera.status;
     if (!context.mounted) return;
 
-    if (status.isGranted) {
-      context.push('/qr-scanner');
-    } else if (status.isPermanentlyDenied) {
+    if (status.isPermanentlyDenied) {
       _showCameraPermissionDeniedDialog(context);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cần cấp quyền camera để quét mã QR'),
-          backgroundColor: AppColors.error,
-        ),
-      );
+      return;
     }
+
+    context.push('/qr-scanner');
   }
 
   void _handleEnterUrl(BuildContext context) {
